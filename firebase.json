@@ -1,0 +1,38 @@
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json",
+    "database": "(default)",
+    "location": "asia-northeast3"
+  },
+  "auth": {
+    "providers": {
+      "anonymous": true,
+      "emailPassword": true,
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "eglishapp",
+        "supportEmail": "atoz46598@gmail.com",
+        "authorizedRedirectUris": [
+          "https://eglishapp-48e8a.firebaseapp.com/__/auth/handler",
+          "https://eglishapp-48e8a.web.app/__/auth/handler",
+          "http://localhost:5173/__/auth/handler",
+          "http://localhost:5173"
+        ]
+      }
+    }
+  },
+  "hosting": {
+    "public": "dist",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  }
+}

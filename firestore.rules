@@ -1,0 +1,179 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // This security rules file enforces the following data structures:
+    //
+    // Collection: user/{userId} and users/{userId}
+    // Document ID: {userId} (matches Firebase Auth UID)
+    // Fields:
+    //   - uid: string (required, size 1..128, immutable) - Owner Firebase Auth UID
+    //   - email: string (optional, size 0..254) - User email address (PII, owner-only)
+    //   - displayName: string (optional, size 0..100) - User display name
+    //   - photoURL: string (optional, size 0..2000) - User profile avatar URL
+    //   - createdAt: timestamp (optional, immutable once set) - Profile creation timestamp
+    //   - updatedAt: timestamp (optional) - Profile last update timestamp
+    //
+    // Subcollection: user/{userId}/words/{wordId} and users/{userId}/words/{wordId}
+    // Document ID: {wordId} (auto-generated or custom ID)
+    // Fields:
+    //   - word: string (required, size 1..200) - English vocabulary word or phrase
+    //   - meaning: string (required, size 1..500) - Meaning / translation of the word
+    //   - example: string (required, size 0..1000) - Example sentence using the word
+    //   - memorized: bool (required) - Whether the user has memorized the word
+    //   - uid: string (required, size 1..128, immutable) - Owner Firebase Auth UID
+    //   - createdAt: timestamp (required, immutable) - Word creation timestamp
+    //   - updatedAt: timestamp (required) - Word last update timestamp
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if user owns the resource based on path parameter userId
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Check if user is owner based on existing document's uid field
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    }
+
+    // Verify UID hasn't been tampered with on create
+    function uidUnchanged() {
+      return !('uid' in request.resource.data) ||
+        request.resource.data.uid == request.auth.uid;
+    }
+
+    // Ensure uid field is not modified on update
+    function uidNotModified() {
+      return !('uid' in request.resource.data) ||
+        request.resource.data.uid == resource.data.uid;
+    }
+
+    // Validate required fields exist
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // Validate that the document contains only the allowed fields
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Validate string length for a required field
+    function validStringLength(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+        request.resource.data[field].size() >= minLen &&
+        request.resource.data[field].size() <= maxLen;
+    }
+
+    // Validate optional string (if present, must be string and within length bounds)
+    function isValidOptionalString(field, minLen, maxLen) {
+      return !(field in request.resource.data) ||
+        (request.resource.data[field] is string &&
+         request.resource.data[field].size() >= minLen &&
+         request.resource.data[field].size() <= maxLen);
+    }
+
+    // Validate optional timestamp (if present, must be a valid timestamp)
+    function isValidOptionalTimestamp(field) {
+      return !(field in request.resource.data) ||
+        request.resource.data[field] is timestamp;
+    }
+
+    // Ensure optional createdAt remains immutable once set on a document
+    function createdAtUnchangedIfPresent() {
+      return !('createdAt' in resource.data) ||
+        ('createdAt' in request.resource.data &&
+         request.resource.data.createdAt == resource.data.createdAt);
+    }
+
+    // ===============================================================
+    // Domain Validators (Used in BOTH create and update)
+    // ===============================================================
+
+    // Validate User Profile document schema and constraints
+    function isValidUserProfile(userId) {
+      let allowedFields = ['uid', 'email', 'displayName', 'photoURL', 'createdAt', 'updatedAt'];
+      let requiredFields = ['uid'];
+      return hasOnlyAllowedFields(allowedFields) &&
+        hasRequiredFields(requiredFields) &&
+        validStringLength('uid', 1, 128) &&
+        request.resource.data.uid == userId &&
+        request.resource.data.uid == request.auth.uid &&
+        isValidOptionalString('email', 0, 254) &&
+        isValidOptionalString('displayName', 0, 100) &&
+        isValidOptionalString('photoURL', 0, 2000) &&
+        isValidOptionalTimestamp('createdAt') &&
+        isValidOptionalTimestamp('updatedAt');
+    }
+
+    // Validate Word document schema and constraints
+    function isValidWord(userId) {
+      let allowedFields = ['word', 'meaning', 'example', 'memorized', 'uid', 'createdAt', 'updatedAt'];
+      return hasOnlyAllowedFields(allowedFields) &&
+        hasRequiredFields(allowedFields) &&
+        validStringLength('word', 1, 200) &&
+        validStringLength('meaning', 1, 500) &&
+        validStringLength('example', 0, 1000) &&
+        request.resource.data.memorized is bool &&
+        validStringLength('uid', 1, 128) &&
+        request.resource.data.uid == userId &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.createdAt is timestamp &&
+        request.resource.data.updatedAt is timestamp;
+    }
+
+    // ===============================================================
+    // Collection Rules: /user/{userId} and /users/{userId}
+    // ===============================================================
+
+    match /user/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUserProfile(userId) && uidUnchanged();
+      allow update: if isOwner(userId) && isDocOwner() && isValidUserProfile(userId) && uidNotModified() && createdAtUnchangedIfPresent();
+      allow delete: if isOwner(userId) && isDocOwner();
+
+      match /words/{wordId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidWord(userId) && uidUnchanged();
+        allow update: if isOwner(userId) && isDocOwner() && isValidWord(userId) && uidNotModified() && request.resource.data.createdAt == resource.data.createdAt;
+        allow delete: if isOwner(userId) && isDocOwner();
+      }
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUserProfile(userId) && uidUnchanged();
+      allow update: if isOwner(userId) && isDocOwner() && isValidUserProfile(userId) && uidNotModified() && createdAtUnchangedIfPresent();
+      allow delete: if isOwner(userId) && isDocOwner();
+
+      match /words/{wordId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidWord(userId) && uidUnchanged();
+        allow update: if isOwner(userId) && isDocOwner() && isValidWord(userId) && uidNotModified() && request.resource.data.createdAt == resource.data.createdAt;
+        allow delete: if isOwner(userId) && isDocOwner();
+      }
+    }
+
+    // ===============================================================
+    // Default Deny All Other Paths
+    // ===============================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
